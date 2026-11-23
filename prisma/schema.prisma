@@ -1,0 +1,240 @@
+// ============================================================================
+// NIAGARA ERP - Canonical Prisma schema
+// Database: Supabase PostgreSQL
+// ----------------------------------------------------------------------------
+// The connection URLs are configured in prisma.config.ts (DATABASE_URL /
+// DIRECT_URL). Every business record is scoped to a company to guarantee
+// multi-tenant isolation at the data-access layer.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  OWNER
+  MANAGER
+  INVENTORY_STAFF
+  CASHIER
+  FINANCE
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  QRIS
+  CARD
+  E_WALLET
+}
+
+enum SaleStatus {
+  COMPLETED
+  VOIDED
+}
+
+enum MovementType {
+  STOCK_IN
+  STOCK_OUT
+  ADJUSTMENT
+  SALE
+  SALE_VOID
+}
+
+// ---------------------------------------------------------------------------
+// Company (tenant root)
+// ---------------------------------------------------------------------------
+
+model Company {
+  id                   String   @id @default(uuid()) @db.Uuid
+  name                 String
+  businessType         String?  @map("business_type")
+  address              String?
+  contactEmail         String?  @map("contact_email")
+  phone                String?
+  currency             String   @default("IDR")
+  fiscalYearStartMonth Int      @default(1) @map("fiscal_year_start_month") @db.SmallInt
+  timezone             String   @default("Asia/Jakarta")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  users          User[]
+  categories     Category[]
+  products       Product[]
+  sales          Sale[]
+  stockMovements StockMovement[]
+
+  @@map("companies")
+}
+
+// ---------------------------------------------------------------------------
+// User
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  companyId    String   @map("company_id") @db.Uuid
+  fullName     String   @map("full_name")
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         Role
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  company          Company         @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  sales            Sale[]          @relation("CashierSales")
+  voidedSales      Sale[]          @relation("VoidedSales")
+  stockMovements   StockMovement[]
+
+  @@index([companyId])
+  @@index([companyId, role])
+  @@index([companyId, isActive])
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Product category
+// ---------------------------------------------------------------------------
+
+model Category {
+  id          String   @id @default(uuid()) @db.Uuid
+  companyId   String   @map("company_id") @db.Uuid
+  name        String
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  products Product[]
+
+  @@unique([companyId, name])
+  @@index([companyId, isActive])
+  @@map("categories")
+}
+
+// ---------------------------------------------------------------------------
+// Product
+// ---------------------------------------------------------------------------
+
+model Product {
+  id             String   @id @default(uuid()) @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  categoryId     String?  @map("category_id") @db.Uuid
+  sku            String
+  name           String
+  unit           String   @default("pcs")
+  purchasePrice  Decimal  @map("purchase_price") @db.Decimal(18, 2)
+  sellingPrice   Decimal  @map("selling_price") @db.Decimal(18, 2)
+  stockQuantity  Decimal  @default(0) @map("stock_quantity") @db.Decimal(18, 3)
+  minimumStock   Decimal  @default(0) @map("minimum_stock") @db.Decimal(18, 3)
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  company        Company         @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  category       Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  saleItems      SaleItem[]
+  stockMovements StockMovement[]
+
+  @@unique([companyId, sku])
+  @@index([companyId, isActive])
+  @@index([companyId, categoryId])
+  @@index([companyId, name])
+  @@map("products")
+}
+
+// ---------------------------------------------------------------------------
+// Sale (transaction header)
+// ---------------------------------------------------------------------------
+
+model Sale {
+  id                String        @id @default(uuid()) @db.Uuid
+  companyId         String        @map("company_id") @db.Uuid
+  transactionNumber String        @map("transaction_number")
+  cashierId         String        @map("cashier_id") @db.Uuid
+  paymentMethod     PaymentMethod @map("payment_method")
+  status            SaleStatus    @default(COMPLETED)
+  totalAmount       Decimal       @map("total_amount") @db.Decimal(18, 2)
+  soldAt            DateTime      @default(now()) @map("sold_at") @db.Timestamptz(6)
+  voidedAt          DateTime?     @map("voided_at") @db.Timestamptz(6)
+  voidedById        String?       @map("voided_by_id") @db.Uuid
+  voidReason        String?       @map("void_reason")
+  clientRequestId   String?       @map("client_request_id")
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  cashier   User       @relation("CashierSales", fields: [cashierId], references: [id], onDelete: Restrict)
+  voidedBy  User?      @relation("VoidedSales", fields: [voidedById], references: [id], onDelete: Restrict)
+  items     SaleItem[]
+
+  @@unique([companyId, transactionNumber])
+  @@unique([companyId, clientRequestId])
+  @@index([companyId, soldAt])
+  @@index([companyId, status])
+  @@index([cashierId])
+  @@map("sales")
+}
+
+// ---------------------------------------------------------------------------
+// Sale item (historical snapshot, never rewritten)
+// ---------------------------------------------------------------------------
+
+model SaleItem {
+  id                    String   @id @default(uuid()) @db.Uuid
+  saleId                String   @map("sale_id") @db.Uuid
+  productId             String   @map("product_id") @db.Uuid
+  productNameSnapshot   String   @map("product_name_snapshot")
+  skuSnapshot           String   @map("sku_snapshot")
+  unitSnapshot          String   @map("unit_snapshot")
+  quantity              Decimal  @db.Decimal(18, 3)
+  sellingPriceSnapshot  Decimal  @map("selling_price_snapshot") @db.Decimal(18, 2)
+  purchaseCostSnapshot  Decimal  @map("purchase_cost_snapshot") @db.Decimal(18, 2)
+  subtotal              Decimal  @db.Decimal(18, 2)
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  sale    Sale    @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([saleId])
+  @@index([productId])
+  @@map("sale_items")
+}
+
+// ---------------------------------------------------------------------------
+// Stock movement (immutable inventory ledger)
+// ---------------------------------------------------------------------------
+
+model StockMovement {
+  id               String       @id @default(uuid()) @db.Uuid
+  companyId        String       @map("company_id") @db.Uuid
+  productId        String       @map("product_id") @db.Uuid
+  movementType     MovementType @map("movement_type")
+  quantityDelta    Decimal      @map("quantity_delta") @db.Decimal(18, 3)
+  previousQuantity Decimal      @map("previous_quantity") @db.Decimal(18, 3)
+  newQuantity      Decimal      @map("new_quantity") @db.Decimal(18, 3)
+  reason           String
+  referenceType    String?      @map("reference_type")
+  referenceId      String?      @map("reference_id")
+  createdById      String       @map("created_by_id") @db.Uuid
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  createdBy User    @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([companyId, createdAt])
+  @@index([productId, createdAt])
+  @@index([companyId, movementType])
+  @@index([companyId, referenceType, referenceId])
+  @@map("stock_movements")
+}
