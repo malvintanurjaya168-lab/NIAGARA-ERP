@@ -1,6 +1,6 @@
 # TODO — NIAGARA ERP Phase 1
 
-Last updated: 22 November 2026
+Last updated: 24 November 2026
 
 ## Completed
 
@@ -21,6 +21,28 @@ Last updated: 22 November 2026
 - [x] Main seed executed and demo data confirmed.
 - [x] Supplementary additive seed executed and verified idempotent.
 - [x] Lint, TypeScript, and production build verification.
+- [x] COA database foundation: `AccountType` enum, `Account` model, additive
+  migration `20261124000000_add_accounts`, and `supabase/schema.sql` update
+  (schema only — migration not applied to the database).
+- [x] COA backend: `accounts.view`/`accounts.manage` permissions,
+  `src/lib/queries/accounts.ts`, `src/lib/actions/accounts.ts` (create,
+  update, activate, deactivate) with hierarchy and tenant-isolation rules.
+- [x] Vitest test suite (`npm test`) for COA permissions, isolation, and rules.
+- [x] COA management UI at `/accounts`: hierarchy tree, filters, account
+  create/edit dialogs, activate/deactivate actions.
+- [x] Indonesian MSME COA template with preview and idempotent transactional
+  apply action (`applyCoaTemplateAction`).
+- [x] COA migration `20261124000000_add_accounts` applied to Supabase via
+  `prisma migrate deploy`; schema verified up to date.
+- [x] Live verification of `/accounts` for all five roles and write-path
+  probes (create/duplicate/FK) against Supabase.
+- [x] Multi-warehouse database foundation: `Warehouse`, `ProductStock`,
+  `StockTransfer`, `StockTransferItem` models, `TransferStatus` enum,
+  `TRANSFER_OUT`/`TRANSFER_IN` movement types, nullable warehouse/transfer
+  references on sales and stock movements, additive migration
+  `20261125000000_add_multi_warehouse` with deterministic backfill to a
+  per-company `Gudang Utama` default warehouse (schema only — migration not
+  applied to the database).
 
 ## Remaining Phase 1 work
 
@@ -44,6 +66,24 @@ Last updated: 22 November 2026
 - [ ] Review seed data removal and backup/restore procedure.
 - [ ] Confirm server-side authorization on any newly added route or action.
 - [ ] Add automated tests for checkout, void, and tenant isolation.
+
+## Multi-warehouse remaining work
+
+- [x] Apply migration `20261125000000_add_multi_warehouse` to Supabase via
+  `prisma migrate deploy`; backfill verified live (default warehouse,
+  `product_stocks` = `stock_quantity`, sales/movement `warehouse_id`).
+- [x] Warehouse CRUD: queries/actions, RBAC permissions (`warehouses.view`/
+  `warehouses.manage`), `/warehouses` UI with default-warehouse management.
+- [x] Dual-write `ProductStock` + `products.stock_quantity` in checkout,
+  void, stock adjustment, and product create paths (`src/lib/stock.ts`
+  `applyStockDelta`; default warehouse used until POS picker lands).
+- [x] Update seed scripts so new products receive default-warehouse
+  `ProductStock` rows (`seed.ts`, `seed-supplemental.ts`).
+- [x] POS warehouse selection: selector UI, `?gudang=` param, cart-clear
+  confirmation, warehouse-scoped catalog stock, `checkoutAction`
+  `warehouseId` validation, warehouse shown on sale detail/list.
+- [ ] Warehouse-scoped stock views/reports.
+- [ ] Stock-transfer module: transfer queries/actions and UI.
 
 ## Explicitly out of scope
 

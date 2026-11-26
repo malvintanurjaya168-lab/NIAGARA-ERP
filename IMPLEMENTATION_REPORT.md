@@ -245,6 +245,182 @@ lain tidak disentuh.
   hook `useActionFeedback`, dan preferensi sidebar memakai
   `useSyncExternalStore`.
 
+## 9.1 COA backend (Phase 2, langkah 2)
+
+- Izin baru `accounts.view` dan `accounts.manage` pada `src/lib/roles.ts`:
+  OWNER penuh, MANAGER dan FINANCE hanya lihat, peran lain tanpa akses.
+- `src/lib/queries/accounts.ts` — query baca terbatas `companyId`: daftar
+  akun dengan filter jenis/pencarian/status, pohon hierarki, detail akun,
+  daftar anak, dan opsi akun induk (mengecualikan akun itu sendiri serta
+  seluruh turunannya).
+- `src/lib/actions/accounts.ts` — Server Actions `accounts.manage`:
+  `createAccountAction`, `updateAccountAction`, `activateAccountAction`, dan
+  `deactivateAccountAction` dengan validasi Zod dan `ActionResult`.
+- Aturan bisnis yang ditegakkan di server: kode akun unik per perusahaan;
+  induk wajib satu perusahaan, berjenis sama, dan bukan akun posting;
+  pencegahan induk-diri-sendiri dan hierarki melingkar; akun dengan anak
+  tidak dapat bertipe posting atau berganti jenis; akun dengan anak tidak
+  dapat dinonaktifkan. Penghapusan akun sengaja tidak disediakan.
+- Pengujian: Vitest ditambahkan sebagai devDependency (`npm test`); 34 tes
+  mencakup izin, isolasi tenant, pembuatan, duplikasi kode, relasi induk-anak,
+  pencegahan siklus, pembaruan, serta aktivasi/nonaktivasi. Fixture memakai
+  Prisma palsu in-memory (`src/test-utils/fake-prisma.ts`).
+- Catatan: migrasi `20261124000000_add_accounts` belum diterapkan ke database;
+  uji integrasi database nyata tetap pending.
+
+## 9.2 COA UI dan template MSME (Phase 2, langkah 3)
+
+- Halaman `/accounts` (Bagan Akun) dengan guard `accounts.view`: kartu metrik
+  (total, aktif, nonaktif, akun posting), pohon hierarki yang dapat dibuka/
+  tutup, pencarian kode/nama, filter jenis dan status — semuanya difilter di
+  klien dari `getAccountHierarchy` tanpa query tambahan.
+- `src/components/accounts/`: `AccountExplorer` (toolbar, pohon, aksi baris),
+  `AccountFormDialog` (buat/ubah akun; opsi induk difilter menurut jenis,
+  status aktif, non-posting, dan bebas siklus), dan `TemplateDialog`
+  (pratinjau status per akun + konfirmasi sebelum menerapkan).
+- Template COA UMKM (`src/lib/accounts-template.ts`): 35 akun dalam konvensi
+  kode `1`, `1.1`, `1.1.01` untuk Aset, Utang, Modal, Pendapatan, dan Beban;
+  akun kelompok non-posting, akun daun posting.
+- `planCoaTemplate` menghitung rencana penerapan (create/exists/conflict/
+  blocked) tanpa menimpa data; `applyCoaTemplateAction` menjalankannya dalam
+  satu transaksi dan mengembalikan ringkasan dibuat/sudah ada/dilewati.
+- Izin UI mengikuti RBAC server: OWNER mengelola, MANAGER/FINANCE hanya
+  melihat, peran lain diarahkan ke `/unauthorized`.
+- Verifikasi: `npx tsc --noEmit`, `npm run lint`, `npm run build`, dan
+  `npx vitest run` (44 tes) lulus. Uji runtime halaman tetap menunggu migrasi
+  COA diterapkan ke Supabase.
+
+## 9.3 Penerapan migrasi dan verifikasi live (Phase 2, langkah 4)
+
+- `npx prisma migrate status` sebelum penerapan menunjukkan `0_init` sudah
+  tercatat dan hanya `20261124000000_add_accounts` yang tertunda.
+- `npx prisma migrate deploy` berhasil; `migrate status` kemudian melaporkan
+  skema database mutakhir.
+- Verifikasi objek database langsung ke Supabase: enum `AccountType` (5 nilai),
+  tabel `accounts` (10 kolom), 5 index, dan kedua foreign key termasuk FK
+  komposit `(company_id, parent_id)` dengan `ON DELETE RESTRICT`.
+- Data existing utuh: 1 perusahaan, 5 pengguna, 47 produk, 218 penjualan;
+  tabel `accounts` kosong (0 baris).
+- Uji live `/accounts` dengan sesi demo: OWNER melihat tombol kelola,
+  MANAGER/FINANCE hanya lihat, INVENTORY_STAFF/CASHIER dialihkan ke
+  `/unauthorized`.
+- Probe tulis live (transien, langsung dibersihkan): insert sukses, duplikasi
+  kode ditolak P2002, induk tidak valid ditolak P2003; tabel kembali kosong.
+- Template MSME sengaja belum diterapkan — diserahkan ke pengguna melalui UI.
+- Verifikasi otomatis tetap hijau: 44 tes Vitest, `prisma validate`,
+  `tsc --noEmit`, `lint`, dan `build` (21 route).
+
+## 9.4 Multi-warehouse: fondasi database (Phase 3, langkah 1)
+
+- Model baru di `prisma/schema.prisma`: `Warehouse`, `ProductStock`,
+  `StockTransfer`, `StockTransferItem`; enum `TransferStatus`
+  (`DRAFT`/`COMPLETED`/`CANCELLED`); `MovementType` ditambah
+  `TRANSFER_OUT`/`TRANSFER_IN`; kolom nullable `warehouse_id` pada `sales`
+  dan `stock_movements` serta `transfer_id` pada `stock_movements`.
+- Migrasi additive `20261125000000_add_multi_warehouse` (belum diterapkan):
+  - Backfill deterministik: satu gudang `Gudang Utama` (`is_default`) per
+    perusahaan dengan UUID turunan `md5(company_id)`; satu baris
+    `product_stocks` per produk yang menyalin `stock_quantity`; `warehouse_id`
+    penjualan dan mutasi stok lama diarahkan ke gudang default.
+  - `ProductStock` menjadi saldo otoritatif per gudang;
+    `products.stock_quantity` tetap total perusahaan untuk kompatibilitas
+    baca (dashboard, POS, laporan).
+  - Isolasi tenant lewat FK komposit `(company_id, …)`; `CHECK` untuk stok
+    non-negatif, kuantitas transfer positif, dan gudang asal ≠ tujuan;
+    partial unique index `warehouses_one_default_per_company`.
+- `supabase/schema.sql` diperbarui untuk instalasi baru.
+- Belum ada perubahan kode aplikasi; penulisan stok existing tetap hanya
+  menyentuh `products.stock_quantity` sampai langkah integrasi berikutnya.
+- Catatan seed: `prisma/seed.ts` dan seed suplementer masih menulis
+  `stock_quantity` langsung — perlu diperbarui pada langkah backend agar
+  produk baru mendapat baris `product_stocks` di gudang default.
+
+## 9.5 Multi-warehouse: migrasi, CRUD gudang, dan UI (Phase 3, langkah 2)
+
+- `npx prisma migrate deploy` menerapkan `20261125000000_add_multi_warehouse`;
+  `migrate status` melaporkan skema mutakhir.
+- Verifikasi live: 1 gudang `Gudang Utama` (default, aktif), 47 baris
+  `product_stocks` dengan kuantitas identik `products.stock_quantity`,
+  218 penjualan dan 606 mutasi stok memiliki `warehouse_id`; tidak ada
+  ketidakcocokan atau referensi lintas perusahaan.
+- Izin baru: `warehouses.view` / `warehouses.manage` — OWNER & MANAGER penuh,
+  INVENTORY_STAFF lihat saja, CASHIER & FINANCE tanpa akses.
+- `src/lib/queries/warehouses.ts`: daftar dengan pencarian/status/halaman,
+  statistik, detail, gudang default, dan opsi gudang aktif — semuanya
+  ter-scope `companyId` dari sesi.
+- `src/lib/actions/warehouses.ts`: buat, ubah, aktifkan, nonaktifkan, dan
+  tetapkan default. Kode unik per perusahaan, gudang default tidak dapat
+  dinonaktifkan, pergantian default dalam transaksi (unset lalu set),
+  tanpa penghapusan gudang.
+- Route `/warehouses` ("Manajemen Gudang"): kartu metrik, pencarian, filter
+  status, tabel dengan badge Default, serta dialog form dan konfirmasi
+  untuk nonaktifkan/ganti default. Nav "Gudang" ditambahkan.
+- Tes: 73 Vitest lulus (tambahan 29 untuk gudang), `tsc`, `lint`, dan
+  `build` hijau; query live ke Supabase terverifikasi.
+
+## 9.6 Multi-warehouse: integrasi penulisan stok (Phase 3, langkah 3A)
+
+- `src/lib/stock.ts` — `applyStockDelta(tx, …)`: memperbarui
+  `product_stocks` (saldo per gudang, otoritatif) dan
+  `products.stock_quantity` (total perusahaan) secara atomik dalam transaksi
+  pemanggil. Guard konkurensi via `updateMany` kondisional (`quantity >=
+  decrement` dan `stock_quantity >= decrement`); baris saldo dibuat otomatis
+  bila belum ada; mode `setQuantity` untuk stok opname.
+- `checkoutAction` — memakai gudang default aktif perusahaan, menyimpan
+  `sale.warehouseId`, mengurangi `ProductStock` + total per baris, dan
+  mencatat mutasi `SALE` ber-`warehouseId`. Idempotensi `clientRequestId`
+  dan retry P2002 dipertahankan; kegagalan saldo gudang menggugurkan seluruh
+  transaksi.
+- `voidSaleAction` — mengembalikan stok ke `sale.warehouseId` (fallback ke
+  gudang default untuk data lama tanpa referensi), mutasi `SALE_VOID`
+  ber-`warehouseId`; proteksi void ganda dipertahankan.
+- `adjustStockAction` — parameter `warehouseId` opsional (default gudang
+  default), validasi kepemilikan + status aktif, `previous/newQuantity`
+  mutasi kini saldo per gudang.
+- `createProductAction` — stok awal dialokasikan ke gudang default:
+  baris `product_stocks` + mutasi `STOCK_IN` ber-`warehouseId`.
+- `updateProductAction` sudah tidak mengizinkan ubah stok langsung — tidak
+  ada perubahan diperlukan.
+- UI: `stock-adjust-dialog` memiliki pemilih gudang (dari
+  `getProductWarehouseStocks` di halaman detail produk); seed `seed.ts` dan
+  `seed-supplemental.ts` diperbarui membuat gudang default, baris
+  `product_stocks`, dan mutasi/penjualan ber-tag gudang.
+- Tes: 93 Vitest lulus (tambahan uji `applyStockDelta`, adjust, buat produk,
+  checkout, dan void termasuk isolasi tenant dan rollback); `tsc`, `lint`,
+  `build` hijau. Verifikasi live Supabase: invarian
+  `SUM(product_stocks) = products.stock_quantity` 0 mismatch dan probe
+  rollback transaksi sukses tanpa mengubah data.
+- Belum dikerjakan (sesuai scope): pemilih gudang di POS, modul transfer
+  stok, tampilan/laporan per gudang, costing FIFO/rata-rata.
+
+## 9.7 Multi-warehouse: pemilihan gudang POS (Phase 3, langkah 3B)
+
+- `src/lib/queries/pos.ts`: `getPosWarehouses` (gudang aktif, default
+  diutamakan — tetap di bawah izin `pos.use` halaman, tanpa perlu
+  `warehouses.view`) dan `getPosCatalog(companyId, warehouseId)` yang kini
+  mengambil `stockQuantity` dari `product_stocks` gudang terpilih (0 bila
+  belum ada baris); `products.stock_quantity` tetap agregat perusahaan.
+- `/pos?gudang=<id>`: param divalidasi ke gudang aktif perusahaan, fallback
+  ke gudang default; katalog di-render ulang server-side setiap ganti
+  gudang sehingga stok tidak pernah basi.
+- `PosTerminal`: pemilih gudang (kode — nama, penanda "(Default)"), nama
+  gudang tampil di header keranjang, `warehouseId` dikirim ke
+  `checkoutAction`; pergantian gudang dengan keranjang terisi meminta
+  konfirmasi lalu mengosongkan keranjang.
+- `checkoutAction`: `warehouseId` opsional (uuid, preprocess null/kosong);
+  bila diisi divalidasi same-company + aktif, bila kosong dipakai gudang
+  default — semua jaminan atomik Step 3A dipertahankan.
+- Tampilan transaksi: detail penjualan menampilkan baris "Gudang"
+  (kode — nama); daftar penjualan memiliki kolom Gudang (tersembunyi di
+  layar kecil, `—` untuk data lama tanpa gudang).
+- Tes: 99 Vitest lulus (tambahan checkout gudang non-default, penolakan
+  gudang lintas perusahaan/nonaktif, ketersediaan per gudang, gudang
+  nonaktif tersembunyi dari opsi POS); `tsc`, `lint`, `build` hijau.
+  Verifikasi live: 1 gudang aktif, katalog 46 produk dengan stok per
+  gudang, invarian tetap 0 mismatch.
+- Belum dikerjakan (sesuai scope): modul transfer stok, tampilan/laporan
+  per gudang, costing FIFO/rata-rata.
+
 ## 10. Batasan dan tindak lanjut
 
 Belum diverifikasi karena tidak ada database aktif:

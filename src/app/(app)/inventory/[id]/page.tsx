@@ -21,6 +21,7 @@ import { StockAdjustDialog } from "@/components/inventory/stock-adjust-dialog";
 import { requirePagePermission } from "@/lib/auth-guards";
 import { can } from "@/lib/roles";
 import { getProductDetail } from "@/lib/queries/inventory";
+import { getProductWarehouseStocks } from "@/lib/queries/warehouses";
 import { MOVEMENT_LABELS, MOVEMENT_TONES } from "@/lib/constants";
 import {
   formatDate,
@@ -46,6 +47,9 @@ export default async function ProductDetailPage({
   if (!product) notFound();
 
   const canManage = can(user.role, "inventory.manage");
+  const warehouseStocks = canManage
+    ? await getProductWarehouseStocks(user.companyId, product.id)
+    : [];
   const margin =
     product.sellingPrice > 0
       ? ((product.sellingPrice - product.purchasePrice) / product.sellingPrice) * 100
@@ -81,6 +85,7 @@ export default async function ProductDetailPage({
                   productName={product.name}
                   unit={product.unit}
                   stock={product.stockQuantity}
+                  warehouses={warehouseStocks}
                 />
               </>
             ) : null}

@@ -17,6 +17,7 @@ import {
   ShoppingCart,
   Trash2,
   Wallet,
+  Warehouse,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { StockBadge } from "@/components/shared/badges";
 import { EmptyState } from "@/components/shared/empty-state";
 import { checkoutAction, type CheckoutResult } from "@/lib/actions/sales";
@@ -39,7 +47,7 @@ import {
   type PaymentMethodValue,
 } from "@/lib/constants";
 import { formatIDR, formatNumber, formatQuantity } from "@/lib/format";
-import type { PosProduct } from "@/lib/queries/pos";
+import type { PosProduct, PosWarehouse } from "@/lib/queries/pos";
 import { cn } from "@/lib/utils";
 
 interface CartLine extends PosProduct {
@@ -63,11 +71,22 @@ function paymentIcon(method: PaymentMethodValue) {
   }
 }
 
-export function PosTerminal({ products }: { products: PosProduct[] }) {
+export function PosTerminal({
+  products,
+  warehouses,
+  selectedWarehouseId,
+}: {
+  products: PosProduct[];
+  warehouses: PosWarehouse[];
+  selectedWarehouseId: string;
+}) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [cart, setCart] = useState<Record<string, number>>({});
+  const [pendingWarehouse, setPendingWarehouse] = useState<string | null>(
+    null,
+  );
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodValue>("CASH");
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const [receipt, setReceipt] = useState<Receipt | null>(null);
@@ -159,6 +178,26 @@ export function PosTerminal({ products }: { products: PosProduct[] }) {
     setCart({});
   }
 
+  const selectedWarehouse = warehouses.find(
+    (warehouse) => warehouse.id === selectedWarehouseId,
+  );
+
+  function switchWarehouse(warehouseId: string) {
+    if (warehouseId === selectedWarehouseId) return;
+    if (cartLines.length > 0) {
+      setPendingWarehouse(warehouseId);
+      return;
+    }
+    router.push(`/pos?gudang=${warehouseId}`);
+  }
+
+  function confirmWarehouseSwitch() {
+    if (!pendingWarehouse) return;
+    setCart({});
+    router.push(`/pos?gudang=${pendingWarehouse}`);
+    setPendingWarehouse(null);
+  }
+
   function handleCheckout() {
     if (cartLines.length === 0 || pending) return;
 
@@ -172,6 +211,7 @@ export function PosTerminal({ products }: { products: PosProduct[] }) {
       formData.set("items", JSON.stringify(items));
       formData.set("paymentMethod", paymentMethod);
       formData.set("clientRequestId", requestId);
+      formData.set("warehouseId", selectedWarehouseId);
 
       const result = await checkoutAction(formData);
 
@@ -192,6 +232,30 @@ export function PosTerminal({ products }: { products: PosProduct[] }) {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0">
           <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+            {warehouses.length > 0 ? (
+              <div className="flex w-full items-center gap-2 sm:w-auto">
+                <Warehouse className="size-4 shrink-0 text-muted-foreground" />
+                <Select
+                  value={selectedWarehouseId}
+                  onValueChange={switchWarehouse}
+                >
+                  <SelectTrigger
+                    className="h-9 w-full sm:w-[220px]"
+                    aria-label="Pilih gudang"
+                  >
+                    <SelectValue placeholder="Pilih gudang" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {warehouses.map((warehouse) => (
+                      <SelectItem key={warehouse.id} value={warehouse.id}>
+                        {warehouse.code} — {warehouse.name}
+                        {warehouse.isDefault ? " (Default)" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
             <div className="relative w-full sm:max-w-[320px]">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -318,6 +382,12 @@ export function PosTerminal({ products }: { products: PosProduct[] }) {
                 <p className="text-[10.5px] text-muted-foreground">
                   {cartLines.length} produk · {formatNumber(itemCount)} item
                 </p>
+                {selectedWarehouse ? (
+                  <p className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <Warehouse className="size-3" />
+                    {selectedWarehouse.code} — {selectedWarehouse.name}
+                  </p>
+                ) : null}
               </div>
             </div>
             {cartLines.length > 0 ? (
@@ -458,6 +528,40 @@ export function PosTerminal({ products }: { products: PosProduct[] }) {
           </div>
         </Card>
       </div>
+
+      <Dialog
+        open={pendingWarehouse !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingWarehouse(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Warehouse className="size-4 text-primary" />
+              Ganti Gudang?
+            </DialogTitle>
+            <DialogDescription>
+              Keranjang berisi {formatNumber(itemCount)} item dari gudang{" "}
+              {selectedWarehouse?.name ?? "saat ini"}. Mengganti gudang akan
+              mengosongkan keranjang dan memuat ulang ketersediaan stok.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingWarehouse(null)}
+            >
+              Batal
+            </Button>
+            <Button type="button" size="sm" onClick={confirmWarehouseSwitch}>
+              Ganti & Kosongkan Keranjang
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={receipt !== null}

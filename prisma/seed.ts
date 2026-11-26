@@ -141,11 +141,18 @@ async function cleanupDemoCompany() {
 
   console.log("Menghapus data demo sebelumnya…");
   await prisma.stockMovement.deleteMany({ where: { companyId: existing.id } });
+  await prisma.stockTransferItem.deleteMany({
+    where: { companyId: existing.id },
+  });
+  await prisma.stockTransfer.deleteMany({ where: { companyId: existing.id } });
   await prisma.saleItem.deleteMany({
     where: { sale: { companyId: existing.id } },
   });
   await prisma.sale.deleteMany({ where: { companyId: existing.id } });
+  await prisma.productStock.deleteMany({ where: { companyId: existing.id } });
   await prisma.product.deleteMany({ where: { companyId: existing.id } });
+  await prisma.warehouse.deleteMany({ where: { companyId: existing.id } });
+  await prisma.account.deleteMany({ where: { companyId: existing.id } });
   await prisma.category.deleteMany({ where: { companyId: existing.id } });
   await prisma.user.deleteMany({ where: { companyId: existing.id } });
   await prisma.company.delete({ where: { id: existing.id } });
@@ -169,6 +176,17 @@ async function main() {
   });
 
   console.log(`Perusahaan dibuat: ${company.name}`);
+
+  const warehouse = await prisma.warehouse.create({
+    data: {
+      companyId: company.id,
+      code: "DEFAULT",
+      name: "Gudang Utama",
+      isActive: true,
+      isDefault: true,
+    },
+    select: { id: true },
+  });
 
   const users: Record<string, { id: string; fullName: string }> = {};
   for (const demo of DEMO_USERS) {
@@ -244,6 +262,15 @@ async function main() {
     productBySku.set(created.sku, created);
     stock.set(created.id, new Prisma.Decimal(product.initialStock));
 
+    await prisma.productStock.create({
+      data: {
+        companyId: company.id,
+        productId: created.id,
+        warehouseId: warehouse.id,
+        quantity: new Prisma.Decimal(product.initialStock),
+      },
+    });
+
     await prisma.stockMovement.create({
       data: {
         companyId: company.id,
@@ -254,6 +281,7 @@ async function main() {
         newQuantity: new Prisma.Decimal(product.initialStock),
         reason: "Stok awal produk",
         referenceType: "SEED",
+        warehouseId: warehouse.id,
         createdById: inventoryUser.id,
       },
     });
@@ -342,6 +370,7 @@ async function main() {
           status: voided ? "VOIDED" : "COMPLETED",
           totalAmount,
           soldAt,
+          warehouseId: warehouse.id,
           ...(voided
             ? {
                 voidedAt: new Date(soldAt.getTime() + 45 * 60000),
@@ -384,6 +413,7 @@ async function main() {
             reason: `Penjualan ${sale.transactionNumber}`,
             referenceType: "SALE",
             referenceId: sale.id,
+            warehouseId: warehouse.id,
             createdById: cashier.id,
             createdAt: soldAt,
           },
@@ -403,6 +433,7 @@ async function main() {
               reason: `Pembatalan ${sale.transactionNumber}`,
               referenceType: "SALE_VOID",
               referenceId: sale.id,
+              warehouseId: warehouse.id,
               createdById: manager.id,
               createdAt: new Date(soldAt.getTime() + 45 * 60000),
             },
@@ -437,6 +468,7 @@ async function main() {
         newQuantity: next,
         reason: "Stok opname akhir bulan",
         referenceType: "SEED",
+        warehouseId: warehouse.id,
         createdById: inventoryUser.id,
       },
     });
@@ -444,9 +476,18 @@ async function main() {
   }
 
   for (const product of products) {
+    const finalStock = stock.get(product.id) ?? new Prisma.Decimal(0);
     await prisma.product.update({
       where: { id: product.id },
-      data: { stockQuantity: stock.get(product.id) ?? new Prisma.Decimal(0) },
+      data: { stockQuantity: finalStock },
+    });
+    await prisma.productStock.updateMany({
+      where: {
+        companyId: company.id,
+        productId: product.id,
+        warehouseId: warehouse.id,
+      },
+      data: { quantity: finalStock },
     });
   }
 

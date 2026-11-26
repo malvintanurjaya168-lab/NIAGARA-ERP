@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { requireActionUser } from "@/lib/auth-guards";
 import { ActionError, type ActionResult } from "@/lib/errors";
 import { formatQuantity } from "@/lib/format";
+import { applyStockDelta } from "@/lib/stock";
 
 const money = z.coerce
   .number()
@@ -63,6 +64,14 @@ const updateProductSchema = productSchema.omit({ stockQuantity: true }).extend({
 const adjustSchema = z
   .object({
     productId: z.string().uuid("Produk tidak valid."),
+    warehouseId: z.preprocess(
+      (value) =>
+        value === null ||
+        (typeof value === "string" && (value.trim() === "" || value === "none"))
+          ? undefined
+          : value,
+      z.string().uuid("Gudang tidak valid.").optional(),
+    ),
     movementType: z.enum(["STOCK_IN", "STOCK_OUT", "ADJUSTMENT"]),
     quantity: quantity,
     reason: z
@@ -158,6 +167,17 @@ export async function createProductAction(
     }
 
     const product = await prisma.$transaction(async (tx) => {
+      const warehouse = await tx.warehouse.findFirst({
+        where: { companyId: user.companyId, isDefault: true, isActive: true },
+        select: { id: true },
+      });
+      if (!warehouse) {
+        throw new ActionError(
+          "Belum ada gudang default aktif untuk menampung stok awal produk.",
+          "CONFLICT",
+        );
+      }
+
       const created = await tx.product.create({
         data: {
           companyId: user.companyId,
@@ -174,6 +194,15 @@ export async function createProductAction(
         select: { id: true, name: true },
       });
 
+      await tx.productStock.create({
+        data: {
+          companyId: user.companyId,
+          productId: created.id,
+          warehouseId: warehouse.id,
+          quantity: new Prisma.Decimal(data.stockQuantity),
+        },
+      });
+
       if (data.stockQuantity > 0) {
         await tx.stockMovement.create({
           data: {
@@ -186,6 +215,7 @@ export async function createProductAction(
             reason: "Stok awal produk",
             referenceType: "PRODUCT_CREATE",
             referenceId: created.id,
+            warehouseId: warehouse.id,
             createdById: user.id,
           },
         });
@@ -282,6 +312,7 @@ export async function adjustStockAction(
     const user = await requireActionUser("inventory.manage");
     const parsed = adjustSchema.safeParse({
       productId: formData.get("productId"),
+      warehouseId: formData.get("warehouseId"),
       movementType: formData.get("movementType"),
       quantity: formData.get("quantity"),
       reason: formData.get("reason"),
@@ -290,18 +321,43 @@ export async function adjustStockAction(
     if (!parsed.success) return validationError(parsed.error);
 
     const data = parsed.data;
+    const amount = new Prisma.Decimal(data.quantity);
 
     const result = await prisma.$transaction(async (tx) => {
       const product = await tx.product.findFirst({
         where: { id: data.productId, companyId: user.companyId },
-        select: { id: true, name: true, unit: true, stockQuantity: true },
+        select: { id: true, name: true, unit: true },
       });
       if (!product) {
         throw new ActionError("Produk tidak ditemukan.", "NOT_FOUND");
       }
 
-      const previous = product.stockQuantity;
-      const amount = new Prisma.Decimal(data.quantity);
+      const warehouse = await tx.warehouse.findFirst({
+        where: data.warehouseId
+          ? { id: data.warehouseId, companyId: user.companyId, isActive: true }
+          : { companyId: user.companyId, isDefault: true, isActive: true },
+        select: { id: true, name: true },
+      });
+      if (!warehouse) {
+        throw new ActionError(
+          data.warehouseId
+            ? "Gudang tidak ditemukan atau sudah nonaktif."
+            : "Belum ada gudang default aktif untuk mencatat penyesuaian stok.",
+          "NOT_FOUND",
+        );
+      }
+
+      const stock = await tx.productStock.findUnique({
+        where: {
+          companyId_productId_warehouseId: {
+            companyId: user.companyId,
+            productId: product.id,
+            warehouseId: warehouse.id,
+          },
+        },
+        select: { quantity: true },
+      });
+      const previous = stock?.quantity ?? new Prisma.Decimal(0);
 
       let next: Prisma.Decimal;
       if (data.movementType === "STOCK_IN") {
@@ -314,7 +370,7 @@ export async function adjustStockAction(
 
       if (next.lt(0)) {
         throw new ActionError(
-          `Stok tidak mencukupi. Stok saat ini ${formatQuantity(previous, product.unit)}.`,
+          `Stok tidak mencukupi. Stok ${warehouse.name} saat ini ${formatQuantity(previous, product.unit)}.`,
           "BUSINESS",
         );
       }
@@ -326,44 +382,38 @@ export async function adjustStockAction(
         );
       }
 
-      if (data.movementType === "STOCK_OUT") {
-        const updated = await tx.product.updateMany({
-          where: {
-            id: product.id,
-            companyId: user.companyId,
-            stockQuantity: { gte: amount },
-          },
-          data: { stockQuantity: { decrement: amount } },
-        });
-        if (updated.count === 0) {
-          throw new ActionError(
-            "Stok berubah saat proses berlangsung. Muat ulang halaman dan coba lagi.",
-            "CONFLICT",
-          );
-        }
-      } else {
-        await tx.product.update({
-          where: { id: product.id },
-          data: { stockQuantity: next },
-        });
-      }
+      const balance = await applyStockDelta(tx, {
+        companyId: user.companyId,
+        productId: product.id,
+        warehouseId: warehouse.id,
+        ...(data.movementType === "ADJUSTMENT"
+          ? { setQuantity: amount }
+          : {
+              delta:
+                data.movementType === "STOCK_IN" ? amount : amount.neg(),
+            }),
+      });
 
-      const delta = next.sub(previous);
       await tx.stockMovement.create({
         data: {
           companyId: user.companyId,
           productId: product.id,
           movementType: data.movementType,
-          quantityDelta: delta,
-          previousQuantity: previous,
-          newQuantity: next,
+          quantityDelta: balance.newQuantity.sub(balance.previousQuantity),
+          previousQuantity: balance.previousQuantity,
+          newQuantity: balance.newQuantity,
           reason: data.reason,
           referenceType: "MANUAL",
+          warehouseId: warehouse.id,
           createdById: user.id,
         },
       });
 
-      return { name: product.name, newQuantity: next, unit: product.unit };
+      return {
+        name: product.name,
+        newQuantity: balance.newQuantity,
+        unit: product.unit,
+      };
     });
 
     revalidateInventory(data.productId);

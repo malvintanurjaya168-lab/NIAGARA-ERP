@@ -13,13 +13,24 @@ companies
   1 ─── N products ─── N sale_items
   1 ─── N sales ─── N sale_items
   1 ─── N stock_movements
+  1 ─── N accounts ─── N accounts (parent_id, self-reference)
+  1 ─── N warehouses ─── N product_stocks
+  1 ─── N stock_transfers ─── N stock_transfer_items
 
 categories 1 ─── N products        (products.category_id, ON DELETE SET NULL)
 users      1 ─── N sales           (sales.cashier_id)
 users      1 ─── N sales           (sales.voided_by_id, opsional)
 users      1 ─── N stock_movements (stock_movements.created_by_id)
+users      1 ─── N stock_transfers (stock_transfers.created_by_id)
 products   1 ─── N sale_items
 products   1 ─── N stock_movements
+products   1 ─── N product_stocks
+products   1 ─── N stock_transfer_items
+warehouses 1 ─── N product_stocks  (product_stocks.warehouse_id, komposit company_id)
+warehouses 1 ─── N stock_movements (stock_movements.warehouse_id, opsional)
+warehouses 1 ─── N sales           (sales.warehouse_id, opsional)
+warehouses 1 ─── N stock_transfers (from_warehouse_id / to_warehouse_id)
+accounts   1 ─── N accounts         (accounts.parent_id → accounts, hirarki COA)
 ```
 
 Semua tabel bisnis memiliki `company_id` kecuali `sale_items`; isolasi
@@ -33,7 +44,9 @@ Semua tabel bisnis memiliki `company_id` kecuali `sale_items`; isolasi
 | `Role` | `OWNER`, `MANAGER`, `INVENTORY_STAFF`, `CASHIER`, `FINANCE` |
 | `PaymentMethod` | `CASH`, `BANK_TRANSFER`, `QRIS`, `CARD`, `E_WALLET` |
 | `SaleStatus` | `COMPLETED`, `VOIDED` |
-| `MovementType` | `STOCK_IN`, `STOCK_OUT`, `ADJUSTMENT`, `SALE`, `SALE_VOID` |
+| `MovementType` | `STOCK_IN`, `STOCK_OUT`, `ADJUSTMENT`, `SALE`, `SALE_VOID`, `TRANSFER_OUT`, `TRANSFER_IN` |
+| `AccountType` | `ASSET`, `LIABILITY`, `EQUITY`, `REVENUE`, `EXPENSE` |
+| `TransferStatus` | `DRAFT`, `COMPLETED`, `CANCELLED` |
 
 ## Tabel
 
@@ -124,6 +137,7 @@ Header transaksi penjualan.
 | `voided_by_id` | `uuid` | ya | — | FK → `users.id`, `RESTRICT`. |
 | `void_reason` | `text` | ya | — | Alasan pembatalan. |
 | `client_request_id` | `text` | ya | — | Idempotency key dari POS; unik per perusahaan. |
+| `warehouse_id` | `uuid` | ya | — | FK komposit `(company_id, warehouse_id)` → `warehouses(company_id, id)`, `RESTRICT`; gudang asal stok. Diisi backfill ke gudang default untuk data lama. |
 | `created_at` | `timestamptz(6)` | tidak | `now()` | Waktu dibuat. |
 
 Catatan: PostgreSQL mengizinkan banyak nilai `NULL` pada unique index
@@ -164,14 +178,110 @@ Buku besar pergerakan stok yang hanya ditambah (append-only).
 | `previous_quantity` | `decimal(18,3)` | tidak | — | Saldo sebelum. |
 | `new_quantity` | `decimal(18,3)` | tidak | — | Saldo sesudah. |
 | `reason` | `text` | tidak | — | Alasan yang dapat dibaca manusia. |
-| `reference_type` | `text` | ya | — | Mis. `SALE`, `SALE_VOID`. |
+| `reference_type` | `text` | ya | — | Mis. `SALE`, `SALE_VOID`, `TRANSFER`. |
 | `reference_id` | `text` | ya | — | ID referensi transaksi. |
+| `warehouse_id` | `uuid` | ya | — | FK komposit `(company_id, warehouse_id)` → `warehouses(company_id, id)`, `RESTRICT`; gudang tempat saldo berubah. Diisi backfill ke gudang default untuk data lama. |
+| `transfer_id` | `uuid` | ya | — | FK komposit `(company_id, transfer_id)` → `stock_transfers(company_id, id)`, `RESTRICT`; terisi untuk pergerakan transfer. |
 | `created_by_id` | `uuid` | tidak | — | FK → `users.id`, `RESTRICT`. |
 | `created_at` | `timestamptz(6)` | tidak | `now()` | Waktu pergerakan. |
 
 `previous_quantity` dan `new_quantity` memungkinkan audit stok tanpa menghitung
 ulang seluruh ledger. Nilainya harus konsisten:
 `previous_quantity + quantity_delta = new_quantity`.
+
+### `accounts`
+
+Akun pada Chart of Accounts (COA), tersusun hierarki per perusahaan.
+Dibuat oleh migrasi additive `20261124000000_add_accounts`.
+
+| Kolom | Tipe | Null | Default | Keterangan |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | tidak | — | Primary key. |
+| `company_id` | `uuid` | tidak | — | FK → `companies.id`, `RESTRICT`. |
+| `code` | `text` | tidak | — | Kode akun; unik per perusahaan. |
+| `name` | `text` | tidak | — | Nama akun. |
+| `type` | `AccountType` | tidak | — | Klasifikasi akun. |
+| `parent_id` | `uuid` | ya | — | FK komposit `(company_id, parent_id)` → `accounts(company_id, id)`, `RESTRICT`; memastikan induk selalu satu perusahaan. |
+| `is_postable` | `boolean` | tidak | `true` | Akun yang dapat menerima posting jurnal (idealnya hanya akun daun). |
+| `is_active` | `boolean` | tidak | `true` | Akun nonaktif tidak dipakai untuk transaksi baru. |
+| `created_at` | `timestamptz(6)` | tidak | `now()` | Waktu dibuat. |
+| `updated_at` | `timestamptz(6)` | tidak | — | Diperbarui aplikasi. |
+
+Relasi induk–anak ditegakkan oleh foreign key komposit
+`(company_id, parent_id) → accounts(company_id, id)`, sehingga akun induk
+tidak mungkin berada di perusahaan lain. Semua foreign key memakai
+`ON DELETE RESTRICT`; akun yang direferensikan sebagai induk (dan kelak oleh
+entri jurnal) tidak dapat dihapus.
+
+### `warehouses`
+
+Lokasi penyimpanan per perusahaan. Dibuat oleh migrasi additive
+`20261125000000_add_multi_warehouse`; setiap perusahaan mendapat satu
+gudang default `Gudang Utama` melalui backfill.
+
+| Kolom | Tipe | Null | Default | Keterangan |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | tidak | — | Primary key. |
+| `company_id` | `uuid` | tidak | — | FK → `companies.id`, `RESTRICT`. |
+| `code` | `text` | tidak | — | Kode gudang; unik per perusahaan. |
+| `name` | `text` | tidak | — | Nama gudang. |
+| `address` | `text` | ya | — | Alamat opsional. |
+| `is_active` | `boolean` | tidak | `true` | Gudang nonaktif tidak dipakai transaksi baru. |
+| `is_default` | `boolean` | tidak | `false` | Gudang utama; maksimal satu per perusahaan aktif (partial unique index). |
+| `created_at` | `timestamptz(6)` | tidak | `now()` | Waktu dibuat. |
+| `updated_at` | `timestamptz(6)` | tidak | — | Diperbarui aplikasi. |
+
+### `product_stocks`
+
+Saldo stok otoritatif per produk per gudang. Dibuat oleh migrasi
+`20261125000000_add_multi_warehouse`; setiap produk mendapat satu baris di
+gudang default yang diisi dari `products.stock_quantity`.
+
+| Kolom | Tipe | Null | Default | Keterangan |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | tidak | — | Primary key. |
+| `company_id` | `uuid` | tidak | — | FK → `companies.id`, `RESTRICT`. |
+| `product_id` | `uuid` | tidak | — | FK komposit `(company_id, product_id)` → `products(company_id, id)`, `RESTRICT`. |
+| `warehouse_id` | `uuid` | tidak | — | FK komposit `(company_id, warehouse_id)` → `warehouses(company_id, id)`, `RESTRICT`. |
+| `quantity` | `decimal(18,3)` | tidak | `0` | Saldo gudang; `CHECK (quantity >= 0)`. |
+| `created_at` | `timestamptz(6)` | tidak | `now()` | Waktu dibuat. |
+| `updated_at` | `timestamptz(6)` | tidak | — | Diperbarui aplikasi. |
+
+Unik per `(company_id, product_id, warehouse_id)`. Ke depan, seluruh penulisan
+stok wajib memperbarui `product_stocks` dan `products.stock_quantity`
+( total perusahaan ) secara atomik dalam satu transaksi.
+
+### `stock_transfers`
+
+Header mutasi stok antar-gudang dalam satu perusahaan.
+
+| Kolom | Tipe | Null | Default | Keterangan |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | tidak | — | Primary key. |
+| `company_id` | `uuid` | tidak | — | FK → `companies.id`, `RESTRICT`. |
+| `transfer_number` | `text` | tidak | — | Nomor transfer; unik per perusahaan. |
+| `from_warehouse_id` | `uuid` | tidak | — | FK komposit → `warehouses(company_id, id)`; gudang asal. |
+| `to_warehouse_id` | `uuid` | tidak | — | FK komposit → `warehouses(company_id, id)`; gudang tujuan. `CHECK (from <> to)`. |
+| `status` | `TransferStatus` | tidak | `DRAFT` | `DRAFT`, `COMPLETED`, `CANCELLED`. |
+| `note` | `text` | ya | — | Catatan opsional. |
+| `created_by_id` | `uuid` | tidak | — | FK → `users.id`, `RESTRICT`. |
+| `completed_at` | `timestamptz(6)` | ya | — | Waktu penyelesaian. |
+| `cancelled_at` | `timestamptz(6)` | ya | — | Waktu pembatalan. |
+| `created_at` | `timestamptz(6)` | tidak | `now()` | Waktu dibuat. |
+| `updated_at` | `timestamptz(6)` | tidak | — | Diperbarui aplikasi. |
+
+### `stock_transfer_items`
+
+Baris item transfer.
+
+| Kolom | Tipe | Null | Default | Keterangan |
+| --- | --- | --- | --- | --- |
+| `id` | `uuid` | tidak | — | Primary key. |
+| `company_id` | `uuid` | tidak | — | FK → `companies.id`, `RESTRICT`. |
+| `transfer_id` | `uuid` | tidak | — | FK komposit `(company_id, transfer_id)` → `stock_transfers(company_id, id)`, `RESTRICT`. |
+| `product_id` | `uuid` | tidak | — | FK komposit `(company_id, product_id)` → `products(company_id, id)`, `RESTRICT`. |
+| `quantity` | `decimal(18,3)` | tidak | — | Kuantitas; `CHECK (quantity > 0)`. Unik per `(transfer_id, product_id)`. |
+| `created_at` | `timestamptz(6)` | tidak | `now()` | Waktu dibuat. |
 
 ## Index dan constraint
 
@@ -197,6 +307,26 @@ ulang seluruh ledger. Nilainya harus konsisten:
 | `stock_movements_product_id_created_at_idx` | Riwayat per produk. |
 | `stock_movements_company_id_movement_type_idx` | Filter jenis pergerakan. |
 | `stock_movements_company_id_reference_type_reference_id_idx` | Audit per referensi. |
+| `accounts_company_id_id_key` (unique) | Target FK komposit induk–anak. |
+| `accounts_company_id_code_key` (unique) | Kode akun unik per tenant. |
+| `accounts_company_id_type_idx` | Filter/kelompok akun per klasifikasi. |
+| `accounts_company_id_parent_id_idx` | Traversal hirarki COA. |
+| `accounts_company_id_is_active_idx` | Daftar akun aktif. |
+| `products_company_id_id_key` (unique) | Target FK komposit `product_stocks`/`stock_transfer_items`. |
+| `warehouses_company_id_id_key` (unique) | Target FK komposit gudang. |
+| `warehouses_company_id_code_key` (unique) | Kode gudang unik per tenant. |
+| `warehouses_one_default_per_company` (unique parsial) | Maksimal satu gudang default aktif per perusahaan. |
+| `warehouses_company_id_is_active_idx` | Daftar gudang aktif. |
+| `warehouses_company_id_is_default_idx` | Pencarian gudang default. |
+| `product_stocks_company_id_product_id_warehouse_id_key` (unique) | Satu saldo per produk per gudang. |
+| `product_stocks_company_id_warehouse_id_idx` | Saldo per gudang. |
+| `product_stocks_company_id_product_id_idx` | Saldo per produk. |
+| `stock_transfers_company_id_transfer_number_key` (unique) | Nomor transfer unik per tenant. |
+| `stock_transfers_company_id_id_key` (unique) | Target FK komposit item/movement transfer. |
+| `stock_transfers_company_id_status_idx` | Filter status transfer. |
+| `stock_transfers_company_id_created_at_idx` | Riwayat transfer per periode. |
+| `stock_transfer_items_transfer_id_product_id_key` (unique) | Satu baris produk per transfer. |
+| `stock_transfer_items_company_id_product_id_idx` | Riwayat per produk. |
 
 Semua foreign key memakai `ON DELETE RESTRICT` (kecuali
 `products.category_id` → `SET NULL`), sehingga riwayat transaksi tidak dapat
@@ -221,11 +351,16 @@ terhapus secara tidak sengaja.
 - Tahun fiskal dimulai pada `companies.fiscal_year_start_month`.
 
 ### Stok
-- Saldo utama ada di `products.stock_quantity`; ledger ada di
-  `stock_movements`.
+- `product_stocks` adalah saldo otoritatif per gudang;
+  `products.stock_quantity` tetap total perusahaan untuk kompatibilitas.
+  Keduanya wajib diperbarui atomik dalam satu transaksi.
+- Ledger ada di `stock_movements`; `warehouse_id` mencatat gudang tempat
+  saldo berubah dan `transfer_id` menautkan ke transfer terkait.
 - `SALE` mengurangi stok; `SALE_VOID` menambah stok.
 - `STOCK_IN` menambah; `STOCK_OUT` mengurangi; `ADJUSTMENT` dapat menambah
   atau mengurangi sesuai stok opname.
+- `TRANSFER_OUT`/`TRANSFER_IN` mencatat kaki keluar/masuk pada transfer
+  antar-gudang.
 - Checkout memakai update kondisional
   (`stock_quantity >= quantity`) di dalam transaksi database, sehingga dua
   checkout bersamaan tidak dapat membuat stok negatif.

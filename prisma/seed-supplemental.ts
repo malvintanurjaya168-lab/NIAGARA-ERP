@@ -180,6 +180,22 @@ async function main() {
     );
   }
 
+  const warehouse =
+    (await prisma.warehouse.findFirst({
+      where: { companyId: company.id, isDefault: true, isActive: true },
+      select: { id: true },
+    })) ??
+    (await prisma.warehouse.create({
+      data: {
+        companyId: company.id,
+        code: "DEFAULT",
+        name: "Gudang Utama",
+        isActive: true,
+        isDefault: true,
+      },
+      select: { id: true },
+    }));
+
   const plans = buildPlans();
   const skus = PRODUCTS.map((product) => product.sku);
   const transactionNumbers = plans.map((plan) => plan.transactionNumber);
@@ -298,6 +314,15 @@ async function main() {
         runtimeProducts.set(created.sku, created);
         stock.set(created.id, initialStock);
 
+        await tx.productStock.create({
+          data: {
+            companyId: company.id,
+            productId: created.id,
+            warehouseId: warehouse.id,
+            quantity: initialStock,
+          },
+        });
+
         await tx.stockMovement.create({
           data: {
             companyId: company.id,
@@ -309,6 +334,7 @@ async function main() {
             reason: "Stok awal data demonstrasi tambahan",
             referenceType: "SEED_SUPPLEMENTAL",
             referenceId: created.id,
+            warehouseId: warehouse.id,
             createdById: inventoryUser.id,
             createdAt: initialMovementAt,
           },
@@ -346,6 +372,7 @@ async function main() {
             totalAmount,
             soldAt: plan.soldAt,
             createdAt: plan.soldAt,
+            warehouseId: warehouse.id,
             ...(plan.voided
               ? {
                   voidedAt: plan.voidedAt,
@@ -401,6 +428,7 @@ async function main() {
               reason: `Penjualan ${sale.transactionNumber}`,
               referenceType: "SALE",
               referenceId: sale.id,
+              warehouseId: warehouse.id,
               createdById: saleCashier.id,
               createdAt: plan.soldAt,
             },
@@ -427,6 +455,7 @@ async function main() {
                 reason: `Pembatalan ${sale.transactionNumber}`,
                 referenceType: "SALE_VOID",
                 referenceId: sale.id,
+                warehouseId: warehouse.id,
                 createdById: manager.id,
                 createdAt: voidedAt,
               },
@@ -455,6 +484,7 @@ async function main() {
             reason: "Barang rusak saat penyimpanan",
             referenceType: "SEED_SUPPLEMENTAL",
             referenceId: stockOutProduct.id,
+            warehouseId: warehouse.id,
             createdById: inventoryUser.id,
             createdAt: atJakartaTime("2026-11-20", 17, 0),
           },
@@ -479,6 +509,7 @@ async function main() {
             reason: "Stok opname: selisih hitung persediaan",
             referenceType: "SEED_SUPPLEMENTAL",
             referenceId: adjustmentProduct.id,
+            warehouseId: warehouse.id,
             createdById: inventoryUser.id,
             createdAt: atJakartaTime("2026-11-21", 18, 0),
           },
@@ -486,12 +517,19 @@ async function main() {
       }
 
       for (const product of runtimeProducts.values()) {
+        const finalStock =
+          stock.get(product.id) ?? new Prisma.Decimal(0);
         await tx.product.update({
           where: { id: product.id },
-          data: {
-            stockQuantity:
-              stock.get(product.id) ?? new Prisma.Decimal(0),
+          data: { stockQuantity: finalStock },
+        });
+        await tx.productStock.updateMany({
+          where: {
+            companyId: company.id,
+            productId: product.id,
+            warehouseId: warehouse.id,
           },
+          data: { quantity: finalStock },
         });
       }
 

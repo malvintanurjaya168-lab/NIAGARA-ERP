@@ -9,6 +9,7 @@ import {
   CreditCard,
   ReceiptText,
   UserRound,
+  Warehouse,
 } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { SectionCard } from "@/components/shared/section-card";
@@ -178,6 +179,11 @@ export default async function SaleDetailPage({
               <InfoRow icon={<UserRound className="size-3.5" />} label="Kasir">
                 {sale.cashierName}
               </InfoRow>
+              {sale.warehouse ? (
+                <InfoRow icon={<Warehouse className="size-3.5" />} label="Gudang">
+                  {sale.warehouse.code} — {sale.warehouse.name}
+                </InfoRow>
+              ) : null}
               <InfoRow icon={<ReceiptText className="size-3.5" />} label="Item">
                 {formatNumber(sale.itemCount)} produk
               </InfoRow>

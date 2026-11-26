@@ -2,7 +2,9 @@
 -- NIAGARA ERP — Phase 1 database schema (Supabase / PostgreSQL)
 -- ----------------------------------------------------------------------------
 -- Jalankan seluruh file ini di Supabase SQL Editor pada project kosong.
--- File ini identik dengan prisma/migrations/0_init/migration.sql dan membuat
+-- File ini mencakup prisma/migrations/0_init/migration.sql beserta migrasi
+-- additive COA (prisma/migrations/20261124000000_add_accounts) dan multi-warehouse
+-- (prisma/migrations/20261125000000_add_multi_warehouse), dan membuat
 -- seluruh enum, tabel, relasi, unique constraint, serta index yang dibutuhkan.
 --
 -- Aplikasi mengakses database hanya dari server (Prisma + connection string).
@@ -22,7 +24,13 @@ CREATE TYPE "PaymentMethod" AS ENUM ('CASH', 'BANK_TRANSFER', 'QRIS', 'CARD', 'E
 CREATE TYPE "SaleStatus" AS ENUM ('COMPLETED', 'VOIDED');
 
 -- CreateEnum
-CREATE TYPE "MovementType" AS ENUM ('STOCK_IN', 'STOCK_OUT', 'ADJUSTMENT', 'SALE', 'SALE_VOID');
+CREATE TYPE "MovementType" AS ENUM ('STOCK_IN', 'STOCK_OUT', 'ADJUSTMENT', 'SALE', 'SALE_VOID', 'TRANSFER_OUT', 'TRANSFER_IN');
+
+-- CreateEnum
+CREATE TYPE "AccountType" AS ENUM ('ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'EXPENSE');
+
+-- CreateEnum
+CREATE TYPE "TransferStatus" AS ENUM ('DRAFT', 'COMPLETED', 'CANCELLED');
 
 -- CreateTable
 CREATE TABLE "companies" (
@@ -102,6 +110,7 @@ CREATE TABLE "sales" (
     "voided_by_id" UUID,
     "void_reason" TEXT,
     "client_request_id" TEXT,
+    "warehouse_id" UUID,
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "sales_pkey" PRIMARY KEY ("id")
@@ -136,10 +145,89 @@ CREATE TABLE "stock_movements" (
     "reason" TEXT NOT NULL,
     "reference_type" TEXT,
     "reference_id" TEXT,
+    "warehouse_id" UUID,
+    "transfer_id" UUID,
     "created_by_id" UUID NOT NULL,
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "stock_movements_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "accounts" (
+    "id" UUID NOT NULL,
+    "company_id" UUID NOT NULL,
+    "code" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "type" "AccountType" NOT NULL,
+    "parent_id" UUID,
+    "is_postable" BOOLEAN NOT NULL DEFAULT true,
+    "is_active" BOOLEAN NOT NULL DEFAULT true,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(6) NOT NULL,
+
+    CONSTRAINT "accounts_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "warehouses" (
+    "id" UUID NOT NULL,
+    "company_id" UUID NOT NULL,
+    "code" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "address" TEXT,
+    "is_active" BOOLEAN NOT NULL DEFAULT true,
+    "is_default" BOOLEAN NOT NULL DEFAULT false,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(6) NOT NULL,
+
+    CONSTRAINT "warehouses_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "product_stocks" (
+    "id" UUID NOT NULL,
+    "company_id" UUID NOT NULL,
+    "product_id" UUID NOT NULL,
+    "warehouse_id" UUID NOT NULL,
+    "quantity" DECIMAL(18,3) NOT NULL DEFAULT 0,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(6) NOT NULL,
+
+    CONSTRAINT "product_stocks_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "product_stocks_quantity_nonnegative" CHECK ("quantity" >= 0)
+);
+
+-- CreateTable
+CREATE TABLE "stock_transfers" (
+    "id" UUID NOT NULL,
+    "company_id" UUID NOT NULL,
+    "transfer_number" TEXT NOT NULL,
+    "from_warehouse_id" UUID NOT NULL,
+    "to_warehouse_id" UUID NOT NULL,
+    "status" "TransferStatus" NOT NULL DEFAULT 'DRAFT',
+    "note" TEXT,
+    "created_by_id" UUID NOT NULL,
+    "completed_at" TIMESTAMPTZ(6),
+    "cancelled_at" TIMESTAMPTZ(6),
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(6) NOT NULL,
+
+    CONSTRAINT "stock_transfers_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "stock_transfers_distinct_warehouses" CHECK ("from_warehouse_id" <> "to_warehouse_id")
+);
+
+-- CreateTable
+CREATE TABLE "stock_transfer_items" (
+    "id" UUID NOT NULL,
+    "company_id" UUID NOT NULL,
+    "transfer_id" UUID NOT NULL,
+    "product_id" UUID NOT NULL,
+    "quantity" DECIMAL(18,3) NOT NULL,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "stock_transfer_items_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "stock_transfer_items_quantity_positive" CHECK ("quantity" > 0)
 );
 
 -- CreateIndex
@@ -205,6 +293,66 @@ CREATE INDEX "stock_movements_company_id_movement_type_idx" ON "stock_movements"
 -- CreateIndex
 CREATE INDEX "stock_movements_company_id_reference_type_reference_id_idx" ON "stock_movements"("company_id", "reference_type", "reference_id");
 
+-- CreateIndex
+CREATE INDEX "accounts_company_id_type_idx" ON "accounts"("company_id", "type");
+
+-- CreateIndex
+CREATE INDEX "accounts_company_id_parent_id_idx" ON "accounts"("company_id", "parent_id");
+
+-- CreateIndex
+CREATE INDEX "accounts_company_id_is_active_idx" ON "accounts"("company_id", "is_active");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "accounts_company_id_id_key" ON "accounts"("company_id", "id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "accounts_company_id_code_key" ON "accounts"("company_id", "code");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "products_company_id_id_key" ON "products"("company_id", "id");
+
+-- CreateIndex
+CREATE INDEX "warehouses_company_id_is_active_idx" ON "warehouses"("company_id", "is_active");
+
+-- CreateIndex
+CREATE INDEX "warehouses_company_id_is_default_idx" ON "warehouses"("company_id", "is_default");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "warehouses_company_id_id_key" ON "warehouses"("company_id", "id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "warehouses_company_id_code_key" ON "warehouses"("company_id", "code");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "warehouses_one_default_per_company" ON "warehouses"("company_id") WHERE "is_default" = true AND "is_active" = true;
+
+-- CreateIndex
+CREATE INDEX "product_stocks_company_id_warehouse_id_idx" ON "product_stocks"("company_id", "warehouse_id");
+
+-- CreateIndex
+CREATE INDEX "product_stocks_company_id_product_id_idx" ON "product_stocks"("company_id", "product_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "product_stocks_company_id_product_id_warehouse_id_key" ON "product_stocks"("company_id", "product_id", "warehouse_id");
+
+-- CreateIndex
+CREATE INDEX "stock_transfers_company_id_status_idx" ON "stock_transfers"("company_id", "status");
+
+-- CreateIndex
+CREATE INDEX "stock_transfers_company_id_created_at_idx" ON "stock_transfers"("company_id", "created_at");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "stock_transfers_company_id_id_key" ON "stock_transfers"("company_id", "id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "stock_transfers_company_id_transfer_number_key" ON "stock_transfers"("company_id", "transfer_number");
+
+-- CreateIndex
+CREATE INDEX "stock_transfer_items_company_id_product_id_idx" ON "stock_transfer_items"("company_id", "product_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "stock_transfer_items_transfer_id_product_id_key" ON "stock_transfer_items"("transfer_id", "product_id");
+
 -- AddForeignKey
 ALTER TABLE "users" ADD CONSTRAINT "users_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
@@ -240,3 +388,51 @@ ALTER TABLE "stock_movements" ADD CONSTRAINT "stock_movements_product_id_fkey" F
 
 -- AddForeignKey
 ALTER TABLE "stock_movements" ADD CONSTRAINT "stock_movements_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "accounts" ADD CONSTRAINT "accounts_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "accounts" ADD CONSTRAINT "accounts_company_id_parent_id_fkey" FOREIGN KEY ("company_id", "parent_id") REFERENCES "accounts"("company_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "sales" ADD CONSTRAINT "sales_company_id_warehouse_id_fkey" FOREIGN KEY ("company_id", "warehouse_id") REFERENCES "warehouses"("company_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_movements" ADD CONSTRAINT "stock_movements_company_id_warehouse_id_fkey" FOREIGN KEY ("company_id", "warehouse_id") REFERENCES "warehouses"("company_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_movements" ADD CONSTRAINT "stock_movements_company_id_transfer_id_fkey" FOREIGN KEY ("company_id", "transfer_id") REFERENCES "stock_transfers"("company_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "warehouses" ADD CONSTRAINT "warehouses_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "product_stocks" ADD CONSTRAINT "product_stocks_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "product_stocks" ADD CONSTRAINT "product_stocks_company_id_product_id_fkey" FOREIGN KEY ("company_id", "product_id") REFERENCES "products"("company_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "product_stocks" ADD CONSTRAINT "product_stocks_company_id_warehouse_id_fkey" FOREIGN KEY ("company_id", "warehouse_id") REFERENCES "warehouses"("company_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_transfers" ADD CONSTRAINT "stock_transfers_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_transfers" ADD CONSTRAINT "stock_transfers_company_id_from_warehouse_id_fkey" FOREIGN KEY ("company_id", "from_warehouse_id") REFERENCES "warehouses"("company_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_transfers" ADD CONSTRAINT "stock_transfers_company_id_to_warehouse_id_fkey" FOREIGN KEY ("company_id", "to_warehouse_id") REFERENCES "warehouses"("company_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_transfers" ADD CONSTRAINT "stock_transfers_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_transfer_items" ADD CONSTRAINT "stock_transfer_items_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_transfer_items" ADD CONSTRAINT "stock_transfer_items_company_id_transfer_id_fkey" FOREIGN KEY ("company_id", "transfer_id") REFERENCES "stock_transfers"("company_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_transfer_items" ADD CONSTRAINT "stock_transfer_items_company_id_product_id_fkey" FOREIGN KEY ("company_id", "product_id") REFERENCES "products"("company_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;

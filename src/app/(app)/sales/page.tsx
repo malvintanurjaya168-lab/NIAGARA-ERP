@@ -210,6 +210,9 @@ export default async function SalesPage({
                     <TableHead className="text-[10.5px] uppercase tracking-wide">
                       Kasir
                     </TableHead>
+                    <TableHead className="hidden text-[10.5px] uppercase tracking-wide lg:table-cell">
+                      Gudang
+                    </TableHead>
                     <TableHead className="hidden text-right text-[10.5px] uppercase tracking-wide sm:table-cell">
                       Item
                     </TableHead>
@@ -244,6 +247,9 @@ export default async function SalesPage({
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-[11.5px]">
                         {sale.cashierName}
+                      </TableCell>
+                      <TableCell className="hidden whitespace-nowrap text-[11.5px] text-muted-foreground lg:table-cell">
+                        {sale.warehouseName ?? "—"}
                       </TableCell>
                       <TableCell className="hidden text-right text-[11.5px] tabular-nums text-muted-foreground sm:table-cell">
                         {formatNumber(sale.itemCount)}

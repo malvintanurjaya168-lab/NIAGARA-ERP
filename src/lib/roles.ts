@@ -37,6 +37,12 @@ export const PERMISSIONS = [
   "users.manage",
   "settings.manage",
   "costs.view",
+  "accounts.view",
+  "accounts.manage",
+  "warehouses.view",
+  "warehouses.manage",
+  "transfers.view",
+  "transfers.manage",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -56,12 +62,20 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     "sales.void",
     "reports.view",
     "costs.view",
+    "accounts.view",
+    "warehouses.view",
+    "warehouses.manage",
+    "transfers.view",
+    "transfers.manage",
   ],
   INVENTORY_STAFF: [
     "inventory.view",
     "inventory.manage",
     "inventory.movements",
     "costs.view",
+    "warehouses.view",
+    "transfers.view",
+    "transfers.manage",
   ],
   CASHIER: ["pos.use", "sales.view"],
   FINANCE: [
@@ -70,6 +84,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     "sales.viewAll",
     "reports.view",
     "costs.view",
+    "accounts.view",
+    "transfers.view",
   ],
 };
 

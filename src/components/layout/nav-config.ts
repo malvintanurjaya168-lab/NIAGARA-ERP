@@ -1,11 +1,14 @@
 import {
+  ArrowLeftRight,
   BarChart3,
+  BookOpenText,
   LayoutDashboard,
   Package,
   ReceiptText,
   ScanLine,
   Settings,
   Users,
+  Warehouse,
   type LucideIcon,
 } from "lucide-react";
 import type { Permission } from "@/lib/roles";
@@ -65,11 +68,35 @@ export const NAV_SECTIONS: NavSection[] = [
         permission: "sales.view",
         matchPrefixes: ["/sales"],
       },
+      {
+        href: "/warehouses",
+        label: "Gudang",
+        description: "Lokasi penyimpanan dan stok per gudang",
+        icon: Warehouse,
+        permission: "warehouses.view",
+        matchPrefixes: ["/warehouses"],
+      },
+      {
+        href: "/inventory/transfers",
+        label: "Transfer Stok",
+        description: "Pemindahan stok antar gudang",
+        icon: ArrowLeftRight,
+        permission: "transfers.view",
+        matchPrefixes: ["/inventory/transfers"],
+      },
     ],
   },
   {
     label: "Analitik & Admin",
     items: [
+      {
+        href: "/accounts",
+        label: "Bagan Akun",
+        description: "Struktur dan klasifikasi akun",
+        icon: BookOpenText,
+        permission: "accounts.view",
+        matchPrefixes: ["/accounts"],
+      },
       {
         href: "/reports/financial",
         label: "Laporan Keuangan",
@@ -104,8 +131,11 @@ export const PATH_LABELS: Record<string, string> = {
   "/dashboard": "Dasbor",
   "/inventory": "Inventaris",
   "/inventory/movements": "Riwayat Pergerakan Stok",
+  "/inventory/transfers": "Transfer Stok",
   "/pos": "Point of Sale",
   "/sales": "Transaksi Penjualan",
+  "/warehouses": "Manajemen Gudang",
+  "/accounts": "Bagan Akun",
   "/reports": "Laporan",
   "/reports/financial": "Laporan Keuangan",
   "/users": "Pengguna",

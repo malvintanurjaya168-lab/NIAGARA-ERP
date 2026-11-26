@@ -71,3 +71,29 @@ export const UNITS = [
 
 export const PAGE_SIZE = 10;
 export const SALES_PAGE_SIZE = 12;
+
+export const ACCOUNT_TYPES = [
+  "ASSET",
+  "LIABILITY",
+  "EQUITY",
+  "REVENUE",
+  "EXPENSE",
+] as const;
+
+export type AccountTypeValue = (typeof ACCOUNT_TYPES)[number];
+
+export const ACCOUNT_TYPE_LABELS: Record<AccountTypeValue, string> = {
+  ASSET: "Aset",
+  LIABILITY: "Utang",
+  EQUITY: "Modal",
+  REVENUE: "Pendapatan",
+  EXPENSE: "Beban",
+};
+
+export const ACCOUNT_TYPE_BADGE: Record<AccountTypeValue, string> = {
+  ASSET: "border-sky-500/20 bg-sky-500/10 text-sky-700",
+  LIABILITY: "border-amber-500/20 bg-amber-500/10 text-amber-700",
+  EQUITY: "border-violet-500/20 bg-violet-500/10 text-violet-700",
+  REVENUE: "border-emerald-500/20 bg-emerald-500/10 text-emerald-700",
+  EXPENSE: "border-rose-500/20 bg-rose-500/10 text-rose-700",
+};

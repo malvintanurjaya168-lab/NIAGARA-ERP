@@ -8,6 +8,7 @@ import { requireActionUser } from "@/lib/auth-guards";
 import { ActionError, type ActionResult } from "@/lib/errors";
 import { formatQuantity } from "@/lib/format";
 import { todayKey } from "@/lib/periods";
+import { applyStockDelta } from "@/lib/stock";
 
 export type CheckoutResult =
   | {
@@ -42,6 +43,14 @@ const checkoutSchema = z.object({
     )
     .min(1, "Keranjang masih kosong.")
     .max(100, "Terlalu banyak item dalam satu transaksi."),
+  warehouseId: z.preprocess(
+    (value) =>
+      value === null ||
+      (typeof value === "string" && (value.trim() === "" || value === "none"))
+        ? undefined
+        : value,
+    z.string().uuid("Gudang tidak valid.").optional(),
+  ),
 });
 
 async function nextTransactionNumber(companyId: string): Promise<string> {
@@ -75,6 +84,7 @@ export async function checkoutAction(formData: FormData): Promise<CheckoutResult
     const parsed = checkoutSchema.safeParse({
       paymentMethod: formData.get("paymentMethod"),
       clientRequestId: formData.get("clientRequestId"),
+      warehouseId: formData.get("warehouseId"),
       items: rawItems,
     });
 
@@ -85,7 +95,7 @@ export async function checkoutAction(formData: FormData): Promise<CheckoutResult
       };
     }
 
-    const { paymentMethod, clientRequestId } = parsed.data;
+    const { paymentMethod, clientRequestId, warehouseId } = parsed.data;
 
     const existing = await prisma.sale.findFirst({
       where: { companyId: user.companyId, clientRequestId },
@@ -155,6 +165,21 @@ export async function checkoutAction(formData: FormData): Promise<CheckoutResult
       }
     }
 
+    const warehouse = await prisma.warehouse.findFirst({
+      where: warehouseId
+        ? { id: warehouseId, companyId: user.companyId, isActive: true }
+        : { companyId: user.companyId, isDefault: true, isActive: true },
+      select: { id: true, name: true },
+    });
+    if (!warehouse) {
+      return {
+        ok: false,
+        error: warehouseId
+          ? "Gudang yang dipilih tidak ditemukan atau sudah nonaktif."
+          : "Belum ada gudang default aktif untuk memproses penjualan.",
+      };
+    }
+
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const transactionNumber = await nextTransactionNumber(user.companyId);
 
@@ -168,34 +193,18 @@ export async function checkoutAction(formData: FormData): Promise<CheckoutResult
               throw new ActionError("Produk tidak ditemukan.", "NOT_FOUND");
             }
 
-            const updated = await tx.product.updateMany({
-              where: {
-                id: product.id,
-                companyId: user.companyId,
-                isActive: true,
-                stockQuantity: { gte: line.quantity },
-              },
-              data: { stockQuantity: { decrement: line.quantity } },
+            const balance = await applyStockDelta(tx, {
+              companyId: user.companyId,
+              productId: product.id,
+              warehouseId: warehouse.id,
+              delta: line.quantity.neg(),
             });
-
-            if (updated.count === 0) {
-              throw new ActionError(
-                `Stok ${product.name} berubah atau tidak mencukupi. Muat ulang halaman dan coba lagi.`,
-                "CONFLICT",
-              );
-            }
-
-            const after = await tx.product.findUnique({
-              where: { id: product.id },
-              select: { stockQuantity: true },
-            });
-            const newQuantity = after?.stockQuantity ?? new Prisma.Decimal(0);
 
             snapshots.push({
               product,
               quantity: line.quantity,
-              previousQuantity: newQuantity.add(line.quantity),
-              newQuantity,
+              previousQuantity: balance.previousQuantity,
+              newQuantity: balance.newQuantity,
               subtotal: product.sellingPrice.mul(line.quantity),
             });
           }
@@ -214,6 +223,7 @@ export async function checkoutAction(formData: FormData): Promise<CheckoutResult
               status: "COMPLETED",
               totalAmount,
               clientRequestId,
+              warehouseId: warehouse.id,
               items: {
                 create: snapshots.map((snapshot) => ({
                   productId: snapshot.product.id,
@@ -242,6 +252,7 @@ export async function checkoutAction(formData: FormData): Promise<CheckoutResult
                 reason: `Penjualan ${sale.transactionNumber}`,
                 referenceType: "SALE",
                 referenceId: sale.id,
+                warehouseId: warehouse.id,
                 createdById: user.id,
               },
             });
@@ -350,6 +361,7 @@ export async function voidSaleAction(
         id: true,
         transactionNumber: true,
         status: true,
+        warehouseId: true,
         items: {
           select: { productId: true, quantity: true },
         },
@@ -362,6 +374,27 @@ export async function voidSaleAction(
 
     if (sale.status === "VOIDED") {
       throw new ActionError("Transaksi ini sudah dibatalkan.", "CONFLICT");
+    }
+
+    // Restore stock to the warehouse the sale drew from; fall back to the
+    // company default for legacy rows without a warehouse reference.
+    let warehouseId = sale.warehouseId;
+    if (!warehouseId) {
+      const fallback = await prisma.warehouse.findFirst({
+        where: {
+          companyId: user.companyId,
+          isDefault: true,
+          isActive: true,
+        },
+        select: { id: true },
+      });
+      if (!fallback) {
+        throw new ActionError(
+          "Gudang asal transaksi tidak ditemukan dan tidak ada gudang default aktif.",
+          "CONFLICT",
+        );
+      }
+      warehouseId = fallback.id;
     }
 
     await prisma.$transaction(async (tx) => {
@@ -387,12 +420,12 @@ export async function voidSaleAction(
       }
 
       for (const item of sale.items) {
-        const product = await tx.product.update({
-          where: { id: item.productId },
-          data: { stockQuantity: { increment: item.quantity } },
-          select: { stockQuantity: true },
+        const balance = await applyStockDelta(tx, {
+          companyId: user.companyId,
+          productId: item.productId,
+          warehouseId,
+          delta: item.quantity,
         });
-        const previous = product.stockQuantity.sub(item.quantity);
 
         await tx.stockMovement.create({
           data: {
@@ -400,11 +433,12 @@ export async function voidSaleAction(
             productId: item.productId,
             movementType: "SALE_VOID",
             quantityDelta: item.quantity,
-            previousQuantity: previous,
-            newQuantity: product.stockQuantity,
+            previousQuantity: balance.previousQuantity,
+            newQuantity: balance.newQuantity,
             reason: `Pembatalan ${sale.transactionNumber}: ${parsed.data.reason}`,
             referenceType: "SALE_VOID",
             referenceId: sale.id,
+            warehouseId,
             createdById: user.id,
           },
         });

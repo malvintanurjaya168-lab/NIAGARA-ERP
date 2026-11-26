@@ -29,12 +29,14 @@ import { adjustStockAction } from "@/lib/actions/inventory";
 import { useActionFeedback } from "@/lib/hooks/use-action-feedback";
 import { formatQuantity } from "@/lib/format";
 import type { ActionResult } from "@/lib/errors";
+import type { ProductWarehouseStock } from "@/lib/queries/warehouses";
 
 interface StockAdjustDialogProps {
   productId: string;
   productName: string;
   unit: string;
   stock: number;
+  warehouses: ProductWarehouseStock[];
 }
 
 const TYPES = [
@@ -48,10 +50,20 @@ export function StockAdjustDialog({
   productName,
   unit,
   stock,
+  warehouses,
 }: StockAdjustDialogProps) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [movementType, setMovementType] = useState("STOCK_IN");
+  const defaultWarehouse =
+    warehouses.find((warehouse) => warehouse.isDefault) ?? warehouses[0];
+  const [warehouseId, setWarehouseId] = useState(
+    defaultWarehouse?.warehouseId ?? "",
+  );
+  const selectedWarehouse =
+    warehouses.find((warehouse) => warehouse.warehouseId === warehouseId) ??
+    defaultWarehouse;
+  const warehouseStock = selectedWarehouse?.quantity ?? 0;
   const [state, formAction] = useActionState<ActionResult | undefined, FormData>(
     adjustStockAction,
     undefined,
@@ -96,7 +108,7 @@ export function StockAdjustDialog({
             Sesuaikan Stok
           </DialogTitle>
           <DialogDescription>
-            {productName} · stok saat ini{" "}
+            {productName} · stok perusahaan{" "}
             <span className="font-medium text-foreground">
               {formatQuantity(stock, unit)}
             </span>
@@ -105,6 +117,43 @@ export function StockAdjustDialog({
 
         <form action={formAction} className="space-y-4">
           <input type="hidden" name="productId" value={productId} />
+          <input type="hidden" name="warehouseId" value={warehouseId} />
+
+          {warehouses.length > 1 ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="warehouseId">Gudang</Label>
+              <Select value={warehouseId} onValueChange={setWarehouseId}>
+                <SelectTrigger id="warehouseId" className="w-full">
+                  <SelectValue placeholder="Pilih gudang" />
+                </SelectTrigger>
+                <SelectContent>
+                  {warehouses.map((warehouse) => (
+                    <SelectItem
+                      key={warehouse.warehouseId}
+                      value={warehouse.warehouseId}
+                    >
+                      {warehouse.code} — {warehouse.name}
+                      {warehouse.isDefault ? " (Default)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[10.5px] text-muted-foreground">
+                Stok gudang ini:{" "}
+                <span className="font-medium text-foreground">
+                  {formatQuantity(warehouseStock, unit)}
+                </span>
+              </p>
+            </div>
+          ) : selectedWarehouse ? (
+            <p className="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+              Gudang: <span className="font-medium text-foreground">{selectedWarehouse.name}</span>
+              {" · "}stok gudang{" "}
+              <span className="font-medium text-foreground">
+                {formatQuantity(warehouseStock, unit)}
+              </span>
+            </p>
+          ) : null}
 
           <div className="space-y-1.5">
             <Label htmlFor="movementType">Jenis Pergerakan</Label>
@@ -130,12 +179,15 @@ export function StockAdjustDialog({
             <Label htmlFor="quantity">{quantityLabel}</Label>
             <div className="relative">
               <Input
+                key={warehouseId}
                 id="quantity"
                 name="quantity"
                 type="number"
                 min="0"
                 step="0.001"
-                defaultValue={movementType === "ADJUSTMENT" ? stock : ""}
+                defaultValue={
+                  movementType === "ADJUSTMENT" ? warehouseStock : ""
+                }
                 placeholder="0"
                 className="pr-14"
                 required

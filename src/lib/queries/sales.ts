@@ -20,6 +20,7 @@ export interface SaleRow {
   transactionNumber: string;
   soldAt: string;
   cashierName: string;
+  warehouseName: string | null;
   paymentMethod: string;
   status: string;
   totalAmount: number;
@@ -86,6 +87,7 @@ export async function getSalesList({
         status: true,
         totalAmount: true,
         cashier: { select: { fullName: true } },
+        warehouse: { select: { name: true, code: true } },
         _count: { select: { items: true } },
       },
     }),
@@ -106,6 +108,9 @@ export async function getSalesList({
       transactionNumber: sale.transactionNumber,
       soldAt: sale.soldAt.toISOString(),
       cashierName: sale.cashier.fullName,
+      warehouseName: sale.warehouse
+        ? `${sale.warehouse.code} — ${sale.warehouse.name}`
+        : null,
       paymentMethod: sale.paymentMethod,
       status: sale.status,
       totalAmount: Number(sale.totalAmount),
@@ -160,6 +165,7 @@ export interface SaleDetail {
   voidedByName: string | null;
   cashierName: string;
   cashierId: string;
+  warehouse: { name: string; code: string } | null;
   items: SaleItemDetail[];
   itemCount: number;
   cogs: number;
@@ -196,6 +202,7 @@ export async function getSaleDetail(
       cashierId: true,
       cashier: { select: { fullName: true } },
       voidedBy: { select: { fullName: true } },
+      warehouse: { select: { name: true, code: true } },
       company: {
         select: {
           name: true,
@@ -241,6 +248,7 @@ export async function getSaleDetail(
     voidedByName: sale.voidedBy?.fullName ?? null,
     cashierName: sale.cashier.fullName,
     cashierId: sale.cashierId,
+    warehouse: sale.warehouse,
     itemCount: sale.items.length,
     items: sale.items.map((item) => ({
       id: item.id,

@@ -47,6 +47,22 @@ enum MovementType {
   ADJUSTMENT
   SALE
   SALE_VOID
+  TRANSFER_OUT
+  TRANSFER_IN
+}
+
+enum TransferStatus {
+  DRAFT
+  COMPLETED
+  CANCELLED
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
 }
 
 // ---------------------------------------------------------------------------
@@ -66,11 +82,16 @@ model Company {
   createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  users          User[]
-  categories     Category[]
-  products       Product[]
-  sales          Sale[]
-  stockMovements StockMovement[]
+  users              User[]
+  categories         Category[]
+  products           Product[]
+  sales              Sale[]
+  stockMovements     StockMovement[]
+  accounts           Account[]
+  warehouses         Warehouse[]
+  productStocks      ProductStock[]
+  stockTransfers     StockTransfer[]
+  stockTransferItems StockTransferItem[]
 
   @@map("companies")
 }
@@ -90,10 +111,11 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  company          Company         @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  sales            Sale[]          @relation("CashierSales")
-  voidedSales      Sale[]          @relation("VoidedSales")
-  stockMovements   StockMovement[]
+  company        Company         @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  sales          Sale[]          @relation("CashierSales")
+  voidedSales    Sale[]          @relation("VoidedSales")
+  stockMovements StockMovement[]
+  stockTransfers StockTransfer[] @relation("TransferCreator")
 
   @@index([companyId])
   @@index([companyId, role])
@@ -127,25 +149,28 @@ model Category {
 // ---------------------------------------------------------------------------
 
 model Product {
-  id             String   @id @default(uuid()) @db.Uuid
-  companyId      String   @map("company_id") @db.Uuid
-  categoryId     String?  @map("category_id") @db.Uuid
-  sku            String
-  name           String
-  unit           String   @default("pcs")
-  purchasePrice  Decimal  @map("purchase_price") @db.Decimal(18, 2)
-  sellingPrice   Decimal  @map("selling_price") @db.Decimal(18, 2)
-  stockQuantity  Decimal  @default(0) @map("stock_quantity") @db.Decimal(18, 3)
-  minimumStock   Decimal  @default(0) @map("minimum_stock") @db.Decimal(18, 3)
-  isActive       Boolean  @default(true) @map("is_active")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @map("company_id") @db.Uuid
+  categoryId    String?  @map("category_id") @db.Uuid
+  sku           String
+  name          String
+  unit          String   @default("pcs")
+  purchasePrice Decimal  @map("purchase_price") @db.Decimal(18, 2)
+  sellingPrice  Decimal  @map("selling_price") @db.Decimal(18, 2)
+  stockQuantity Decimal  @default(0) @map("stock_quantity") @db.Decimal(18, 3)
+  minimumStock  Decimal  @default(0) @map("minimum_stock") @db.Decimal(18, 3)
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  company        Company         @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  category       Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  company        Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  category       Category?           @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   saleItems      SaleItem[]
   stockMovements StockMovement[]
+  productStocks  ProductStock[]
+  transferItems  StockTransferItem[]
 
+  @@unique([companyId, id])
   @@unique([companyId, sku])
   @@index([companyId, isActive])
   @@index([companyId, categoryId])
@@ -170,11 +195,13 @@ model Sale {
   voidedById        String?       @map("voided_by_id") @db.Uuid
   voidReason        String?       @map("void_reason")
   clientRequestId   String?       @map("client_request_id")
+  warehouseId       String?       @map("warehouse_id") @db.Uuid
   createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
 
   company   Company    @relation(fields: [companyId], references: [id], onDelete: Restrict)
   cashier   User       @relation("CashierSales", fields: [cashierId], references: [id], onDelete: Restrict)
   voidedBy  User?      @relation("VoidedSales", fields: [voidedById], references: [id], onDelete: Restrict)
+  warehouse Warehouse? @relation(fields: [companyId, warehouseId], references: [companyId, id], onDelete: Restrict)
   items     SaleItem[]
 
   @@unique([companyId, transactionNumber])
@@ -190,17 +217,17 @@ model Sale {
 // ---------------------------------------------------------------------------
 
 model SaleItem {
-  id                    String   @id @default(uuid()) @db.Uuid
-  saleId                String   @map("sale_id") @db.Uuid
-  productId             String   @map("product_id") @db.Uuid
-  productNameSnapshot   String   @map("product_name_snapshot")
-  skuSnapshot           String   @map("sku_snapshot")
-  unitSnapshot          String   @map("unit_snapshot")
-  quantity              Decimal  @db.Decimal(18, 3)
-  sellingPriceSnapshot  Decimal  @map("selling_price_snapshot") @db.Decimal(18, 2)
-  purchaseCostSnapshot  Decimal  @map("purchase_cost_snapshot") @db.Decimal(18, 2)
-  subtotal              Decimal  @db.Decimal(18, 2)
-  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                   String   @id @default(uuid()) @db.Uuid
+  saleId               String   @map("sale_id") @db.Uuid
+  productId            String   @map("product_id") @db.Uuid
+  productNameSnapshot  String   @map("product_name_snapshot")
+  skuSnapshot          String   @map("sku_snapshot")
+  unitSnapshot         String   @map("unit_snapshot")
+  quantity             Decimal  @db.Decimal(18, 3)
+  sellingPriceSnapshot Decimal  @map("selling_price_snapshot") @db.Decimal(18, 2)
+  purchaseCostSnapshot Decimal  @map("purchase_cost_snapshot") @db.Decimal(18, 2)
+  subtotal             Decimal  @db.Decimal(18, 2)
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   sale    Sale    @relation(fields: [saleId], references: [id], onDelete: Restrict)
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -225,16 +252,153 @@ model StockMovement {
   reason           String
   referenceType    String?      @map("reference_type")
   referenceId      String?      @map("reference_id")
+  warehouseId      String?      @map("warehouse_id") @db.Uuid
+  transferId       String?      @map("transfer_id") @db.Uuid
   createdById      String       @map("created_by_id") @db.Uuid
   createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  company   Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
-  createdBy User    @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  company   Company        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  product   Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  createdBy User           @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  warehouse Warehouse?     @relation(fields: [companyId, warehouseId], references: [companyId, id], onDelete: Restrict)
+  transfer  StockTransfer? @relation(fields: [companyId, transferId], references: [companyId, id], onDelete: Restrict)
 
   @@index([companyId, createdAt])
   @@index([productId, createdAt])
   @@index([companyId, movementType])
   @@index([companyId, referenceType, referenceId])
   @@map("stock_movements")
+}
+
+// ---------------------------------------------------------------------------
+// Chart of Accounts account (hierarchical, company-scoped)
+// ---------------------------------------------------------------------------
+
+model Account {
+  id         String      @id @default(uuid()) @db.Uuid
+  companyId  String      @map("company_id") @db.Uuid
+  code       String
+  name       String
+  type       AccountType
+  parentId   String?     @map("parent_id") @db.Uuid
+  isPostable Boolean     @default(true) @map("is_postable")
+  isActive   Boolean     @default(true) @map("is_active")
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  parent   Account?  @relation("AccountHierarchy", fields: [companyId, parentId], references: [companyId, id], onDelete: Restrict)
+  children Account[] @relation("AccountHierarchy")
+
+  @@unique([companyId, id])
+  @@unique([companyId, code])
+  @@index([companyId, type])
+  @@index([companyId, parentId])
+  @@index([companyId, isActive])
+  @@map("accounts")
+}
+
+// ---------------------------------------------------------------------------
+// Warehouse (company-scoped storage location)
+// ---------------------------------------------------------------------------
+
+model Warehouse {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @map("company_id") @db.Uuid
+  code      String
+  name      String
+  address   String?
+  isActive  Boolean  @default(true) @map("is_active")
+  isDefault Boolean  @default(false) @map("is_default")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  company        Company         @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  productStocks  ProductStock[]
+  stockMovements StockMovement[]
+  sales          Sale[]
+  transfersFrom  StockTransfer[] @relation("TransferFrom")
+  transfersTo    StockTransfer[] @relation("TransferTo")
+
+  @@unique([companyId, id])
+  @@unique([companyId, code])
+  @@index([companyId, isActive])
+  @@index([companyId, isDefault])
+  @@map("warehouses")
+}
+
+// ---------------------------------------------------------------------------
+// Product stock (authoritative per-warehouse balance)
+// ---------------------------------------------------------------------------
+// Product.stockQuantity remains the company-wide total for backward
+// compatibility. All inventory writes must update ProductStock and
+// Product.stockQuantity atomically in the same transaction.
+// quantity >= 0 is enforced by a CHECK constraint in the migration SQL.
+
+model ProductStock {
+  id          String   @id @default(uuid()) @db.Uuid
+  companyId   String   @map("company_id") @db.Uuid
+  productId   String   @map("product_id") @db.Uuid
+  warehouseId String   @map("warehouse_id") @db.Uuid
+  quantity    Decimal  @default(0) @db.Decimal(18, 3)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  product   Product   @relation(fields: [companyId, productId], references: [companyId, id], onDelete: Restrict)
+  warehouse Warehouse @relation(fields: [companyId, warehouseId], references: [companyId, id], onDelete: Restrict)
+
+  @@unique([companyId, productId, warehouseId])
+  @@index([companyId, warehouseId])
+  @@index([companyId, productId])
+  @@map("product_stocks")
+}
+
+// ---------------------------------------------------------------------------
+// Stock transfer (warehouse-to-warehouse movement)
+// ---------------------------------------------------------------------------
+
+model StockTransfer {
+  id              String         @id @default(uuid()) @db.Uuid
+  companyId       String         @map("company_id") @db.Uuid
+  transferNumber  String         @map("transfer_number")
+  fromWarehouseId String         @map("from_warehouse_id") @db.Uuid
+  toWarehouseId   String         @map("to_warehouse_id") @db.Uuid
+  status          TransferStatus @default(DRAFT)
+  note            String?
+  createdById     String         @map("created_by_id") @db.Uuid
+  completedAt     DateTime?      @map("completed_at") @db.Timestamptz(6)
+  cancelledAt     DateTime?      @map("cancelled_at") @db.Timestamptz(6)
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  company       Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  fromWarehouse Warehouse           @relation("TransferFrom", fields: [companyId, fromWarehouseId], references: [companyId, id], onDelete: Restrict)
+  toWarehouse   Warehouse           @relation("TransferTo", fields: [companyId, toWarehouseId], references: [companyId, id], onDelete: Restrict)
+  createdBy     User                @relation("TransferCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  items         StockTransferItem[]
+  movements     StockMovement[]
+
+  @@unique([companyId, id])
+  @@unique([companyId, transferNumber])
+  @@index([companyId, status])
+  @@index([companyId, createdAt])
+  @@map("stock_transfers")
+}
+
+model StockTransferItem {
+  id         String   @id @default(uuid()) @db.Uuid
+  companyId  String   @map("company_id") @db.Uuid
+  transferId String   @map("transfer_id") @db.Uuid
+  productId  String   @map("product_id") @db.Uuid
+  quantity   Decimal  @db.Decimal(18, 3)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  company  Company       @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  transfer StockTransfer @relation(fields: [companyId, transferId], references: [companyId, id], onDelete: Restrict)
+  product  Product       @relation(fields: [companyId, productId], references: [companyId, id], onDelete: Restrict)
+
+  @@unique([transferId, productId])
+  @@index([companyId, productId])
+  @@map("stock_transfer_items")
 }

@@ -15,7 +15,8 @@
     "db:seed": "prisma db seed",
     "db:seed:supplemental": "tsx prisma/seed-supplemental.ts",
     "db:baseline": "prisma migrate resolve --applied 0_init",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "test": "vitest run"
   },
   "dependencies": {
     "@hookform/resolvers": "^7.0.8",
@@ -56,7 +57,8 @@
     "prisma": "^7.10.1",
     "tailwindcss": "4.3.3",
     "tsx": "^4.23.15",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.12"
   },
   "type": "module"
 }
